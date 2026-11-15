@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#0f172a">
+<title>Trafik Işığı</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;font-family:-apple-system,system-ui,sans-serif;overscroll-behavior:none}
+  #map{position:absolute;inset:0;z-index:0}
+  .topbar{position:fixed;top:12px;left:12px;right:12px;z-index:1000;background:rgba(15,23,42,.92);color:#fff;padding:10px 14px;border-radius:12px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+  .fab{position:fixed;width:56px;height:56px;border-radius:50%;border:none;color:#fff;font-size:26px;z-index:1000;box-shadow:0 4px 12px rgba(0,0,0,.4);cursor:pointer}
+  #addBtn{bottom:90px;right:20px;background:#22c55e}
+  #locateBtn{bottom:20px;right:20px;background:#3b82f6;font-size:22px}
+  .sheet{position:fixed;bottom:0;left:0;right:0;background:#fff;border-radius:20px 20px 0 0;padding:20px;z-index:2000;transform:translateY(110%);transition:transform .3s;box-shadow:0 -4px 20px rgba(0,0,0,.2);max-width:600px;margin:0 auto}
+  .sheet.open{transform:translateY(0)}
+  .sheet h2{font-size:18px;margin-bottom:12px;color:#0f172a}
+  .phase-display{text-align:center;padding:20px;border-radius:16px;margin-bottom:14px;color:#fff;transition:background .3s}
+  .phase-display .num{font-size:56px;font-weight:700;line-height:1}
+  .phase-display .label{font-size:13px;opacity:.95;margin-top:6px}
+  .btn-row{display:flex;gap:8px;margin-top:8px}
+  .btn-row button{flex:1;padding:12px;border:none;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer}
+  .btn-green{background:#22c55e;color:#fff}
+  .btn-red{background:#e53935;color:#fff}
+  .btn-del{background:#ef4444;color:#fff}
+  .btn-close{background:#e5e7eb;color:#0f172a}
+  .dot{width:26px;height:26px;border-radius:50%;border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.5);transition:background .4s}
+  .leaflet-control-attribution{font-size:9px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="topbar" id="topbar">💡 Haritaya <b>uzun bas</b> veya sağ alttaki <b>+</b> ile kavşak ekle</div>
+<button class="fab" id="addBtn">+</button>
+<button class="fab" id="locateBtn">◎</button>
+
+<div class="sheet" id="sheet">
+  <h2 id="sheetName">—</h2>
+  <div class="phase-display" id="phaseDisplay">
+    <div class="num" id="countdown">--</div>
+    <div class="label" id="phaseLabel">--</div>
+  </div>
+  <div class="btn-row">
+    <button class="btn-green" onclick="syncGreen()">🟢 Şu an YEŞİL</button>
+    <button class="btn-red" onclick="syncRed()">🔴 Şu an KIRMIZI</button>
+  </div>
+  <div class="btn-row">
+    <button class="btn-del" onclick="deleteSelected()">Sil</button>
+    <button class="btn-close" onclick="closeSheet()">Kapat</button>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const COLORS={red:'#e53935',green:'#43a047',yellow:'#fbc02d'};
+const LABEL={red:'KIRMIZI',green:'YEŞİL',yellow:'SARI'};
+let intersections=JSON.parse(localStorage.getItem('ti_list')||'[]');
+let selectedId=null;
+
+const map=L.map('map',{zoomControl:false}).setView([41.0082,28.9784],12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+
+function save(){localStorage.setItem('ti_list',JSON.stringify(intersections));}
+
+function getPhase(i){
+  const total=i.red+i.green+i.yellow;
+  const elapsed=((Date.now()-i.offset)/1000)%total;
+  let phase,remaining,duration;
+  if(elapsed<i.red){phase='red';remaining=i.red-elapsed;duration=i.red;}
+  else if(elapsed<i.red+i.green){phase='green';remaining=i.red+i.green-elapsed;duration=i.green;}
+  else{phase='yellow';remaining=total-elapsed;duration=i.yellow;}
+  return{phase,remaining:Math.max(0,Math.ceil(remaining)),duration};
+}
+
+function renderMarkers(){
+  map.eachLayer(l=>{if(l instanceof L.Marker)map.removeLayer(l);});
+  intersections.forEach(i=>{
+    const{phase}=getPhase(i);
+    const m=L.marker([i.lat,i.lng],{icon:L.divIcon({
+      className:'',html:`<div class="dot" data-id="${i.id}" style="background:${COLORS[phase]}"></div>`,
+      iconSize:[26,26],iconAnchor:[13,13]
+    })}).addTo(map);
+    m.on('click',()=>openSheet(i.id));
+  });
+}
+
+function tick(){
+  document.querySelectorAll('.dot[data-id]').forEach(el=>{
+    const i=intersections.find(x=>x.id===el.dataset.id);
+    if(!i)return;const{phase}=getPhase(i);
+    el.style.background=COLORS[phase];
+  });
+  if(selectedId){
+    const i=intersections.find(x=>x.id===selectedId);
+    if(i){
+      const{phase,remaining,duration}=getPhase(i);
+      document.getElementById('countdown').textContent=remaining;
+      document.getElementById('phaseLabel').textContent=LABEL[phase]+' • '+remaining+'/'+duration+' sn';
+      document.getElementById('phaseDisplay').style.background=COLORS[phase];
+    }
+  }
+}
+setInterval(tick,200);
+
+function openSheet(id){
+  selectedId=id;
+  const i=intersections.find(x=>x.id===id);
+  if(!i)return;
+  document.getElementById('sheetName').textContent=i.name;
+  document.getElementById('sheet').classList.add('open');
+  tick();
+}
+function closeSheet(){selectedId=null;document.getElementById('sheet').classList.remove('open');}
+function deleteSelected(){
+  if(!selectedId)return;
+  if(!confirm('Bu kavşak silinsin mi?'))return;
+  intersections=intersections.filter(x=>x.id!==selectedId);
+  save();renderMarkers();closeSheet();
+}
+function syncGreen(){
+  if(!selectedId)return;
+  const i=intersections.find(x=>x.id===selectedId);
+  i.offset=Date.now()-i.red*1000;save();tick();
+}
+function syncRed(){
+  if(!selectedId)return;
+  const i=intersections.find(x=>x.id===selectedId);
+  i.offset=Date.now();save();tick();
+}
+
+function addAt(lat,lng){
+  const name=prompt('Kavşak adı:','Kavşak '+(intersections.length+1));
+  if(!name)return;
+  const red=Math.max(1,parseInt(prompt('🔴 Kırmızı süre (saniye):','45'))||45);
+  const green=Math.max(1,parseInt(prompt('🟢 Yeşil süre (saniye):','30'))||30);
+  const yellow=Math.max(1,parseInt(prompt('🟡 Sarı süre (saniye):','3'))||3);
+  const i={id:Date.now().toString(),lat,lng,name,red,green,yellow,offset:Date.now()};
+  intersections.push(i);save();renderMarkers();openSheet(i.id);
+}
+
+document.getElementById('addBtn').onclick=()=>{
+  const c=map.getCenter();addAt(c.lat,c.lng);
+};
+
+let pressTimer=null;
+function clearPress(){clearTimeout(pressTimer);pressTimer=null;}
+map.on('mousedown touchstart',e=>{
+  clearPress();
+  pressTimer=setTimeout(()=>addAt(e.latlng.lat,e.latlng.lng),700);
+});
+map.on('mouseup mouseout dragstart mousemove touchmove touchend touchcancel',clearPress);
+
+document.getElementById('locateBtn').onclick=()=>{
+  if(!navigator.geolocation){alert('Konum desteklenmiyor');return;}
+  navigator.geolocation.getCurrentPosition(
+    p=>map.setView([p.coords.latitude,p.coords.longitude],16),
+    ()=>alert('Konum alınamadı')
+  );
+};
+
+renderMarkers();
+navigator.geolocation&&navigator.geolocation.getCurrentPosition(
+  p=>map.setView([p.coords.latitude,p.coords.longitude],15),()=>{}
+);
+
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html>
